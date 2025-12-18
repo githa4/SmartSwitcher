@@ -38,7 +38,7 @@ impl Module for LayoutSwitcherModule {
                 info!("   Порог детекта (минимум клавиш): {}", config.detect_threshold);
                 info!("   Мин. длина слова для автоисправления: {}", min_autocorrect_len);
             }
-            info!("   Для теста: набери 'ghbdtn' + пробел в Блокноте (EN раскладка)");
+            info!("   Для теста: набери 'ghbdtn' + пробел в любом поле ввода (EN раскладка)");
 
             let hotkey = config.hotkey.to_lowercase();
             if hotkey != "alt+shift" {
@@ -50,7 +50,6 @@ impl Module for LayoutSwitcherModule {
             let mut hotkey_fired = false;
 
             let mut word_keys: Vec<char> = Vec::new();
-            let mut word_started_in_cyrillic: Option<bool> = None;
 
             let is_letter_vk = |vk: u32| (0x41..=0x5A).contains(&vk);
             let vk_to_letter = |vk: u32, shift: bool| {
@@ -170,51 +169,21 @@ impl Module for LayoutSwitcherModule {
                             0x08 => {
                                 // Backspace
                                 word_keys.pop();
-                                if word_keys.is_empty() {
-                                    word_started_in_cyrillic = None;
-                                }
                             }
                             0x20 => {
                                 // Space
                                 if word_keys.len() >= config.detect_threshold as usize {
                                     let lang = platform.get_active_lang_id().unwrap_or(0);
-                                    let commit_is_cyrillic = platform
-                                        .is_active_layout_cyrillic()
-                                        .unwrap_or(false);
+                                    let commit_is_cyrillic = matches!(lang, 0x0419 | 0x0422 | 0x0423);
                                     let commit_is_latin = !commit_is_cyrillic;
-
-                                    // Ключевое: направление определяем по раскладке, в которой НАЧАЛИ слово.
-                                    // Это лечит кейс Notepad: набрал в EN, переключил Alt+Shift, нажал пробел.
-                                    let word_is_cyrillic = word_started_in_cyrillic.unwrap_or(commit_is_cyrillic);
-                                    let word_is_latin = !word_is_cyrillic;
 
                                     let typed: String = word_keys.iter().collect();
 
-                                    // Важно: мы логируем физические латинские клавиши (VK A-Z).
-                                    // Если активна кириллица, то в поле ввода пользователь видит would_be_cyrillic.
-                                    let would_be_cyrillic: String =
-                                        typed.chars().map(map_en_to_ru).collect();
-                                    let screen_guess = if commit_is_cyrillic {
-                                        would_be_cyrillic.as_str()
-                                    } else {
-                                        typed.as_str()
-                                    };
-
-                                    let window = platform
-                                        .get_foreground_window_info()
-                                        .ok()
-                                        .unwrap_or_default();
-
                                     debug!(
                                         word = %typed,
-                                        screen_guess = %screen_guess,
-                                        window_title = %window.title,
-                                        window_process = %window.process_name.unwrap_or_default(),
                                         lang = format_args!("0x{lang:04X}"),
                                         commit_is_latin,
                                         commit_is_cyrillic,
-                                        word_is_latin,
-                                        word_is_cyrillic,
                                         "space commit"
                                     );
 
@@ -232,7 +201,7 @@ impl Module for LayoutSwitcherModule {
                                         continue;
                                     }
 
-                                    if word_is_latin {
+                                    if commit_is_latin {
                                         // EN (0x0409) -> RU (0x0419)
                                         let converted: String = typed.chars().map(map_en_to_ru).collect();
 
@@ -285,7 +254,7 @@ impl Module for LayoutSwitcherModule {
                                                 "auto-correct skipped (heuristic EN→RU)"
                                             );
                                         }
-                                    } else if word_is_cyrillic {
+                                    } else if commit_is_cyrillic {
                                         // RU (0x0419) -> EN (0x0409)
                                         // Тут `typed` — это физические латинские клавиши.
                                         // Если пользователь хотел английское слово, оно уже находится в `typed`.
@@ -350,29 +319,21 @@ impl Module for LayoutSwitcherModule {
                                 }
 
                                 word_keys.clear();
-                                word_started_in_cyrillic = None;
                             }
                             0x0D => {
                                 // Enter
                                 // Консервативно: НЕ автоисправляем на Enter, чтобы не ломать переносы строк
                                 // (в разных приложениях это может быть \n или \r\n).
                                 word_keys.clear();
-                                word_started_in_cyrillic = None;
                             }
                             vk if is_letter_vk(vk) => {
                                 // letters: collect physical key as latin char
-                                if word_keys.is_empty() {
-                                    word_started_in_cyrillic = Some(
-                                        platform.is_active_layout_cyrillic().unwrap_or(false),
-                                    );
-                                }
                                 let ch = vk_to_letter(vk, is_shift_down);
                                 word_keys.push(ch);
                             }
                             _ => {
                                 // delimiter / control
                                 word_keys.clear();
-                                word_started_in_cyrillic = None;
                             }
                         }
                     }

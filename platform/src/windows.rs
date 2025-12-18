@@ -14,9 +14,9 @@ use windows_sys::Win32::{
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::Input::KeyboardAndMouse::{
-        GetKeyboardLayout, GetKeyboardLayoutList, MapVirtualKeyExW, SendInput, ToUnicodeEx, INPUT,
-        INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-        KEYEVENTF_UNICODE, VK_BACK,
+        GetKeyboardLayout, GetKeyboardLayoutList, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD,
+        KEYBDINPUT,
+        KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_BACK,
     },
     UI::WindowsAndMessaging::{
         CallNextHookEx, DispatchMessageW, GetForegroundWindow, GetMessageW,
@@ -27,54 +27,6 @@ use windows_sys::Win32::{
         WM_SYSKEYUP,
     },
 };
-
-fn is_cyrillic_char(ch: char) -> bool {
-    matches!(ch, '\u{0400}'..='\u{04FF}')
-}
-
-pub fn is_active_layout_cyrillic() -> anyhow::Result<bool> {
-    let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.is_null() {
-        return Ok(false);
-    }
-
-    let mut pid: u32 = 0;
-    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
-    if thread_id == 0 {
-        return Ok(false);
-    }
-
-    let hkl = unsafe { GetKeyboardLayout(thread_id) };
-
-    // Пробуем понять "какая это раскладка" по выводу ToUnicodeEx для VK_G.
-    // 0x47 = 'G'
-    let vk_g: u32 = 0x47;
-    let scan = unsafe { MapVirtualKeyExW(vk_g, 0, hkl) };
-
-    // Важно: не используем GetKeyboardState (он привязан к потоку) — это может врать.
-    // Нам нужна базовая буква без модификаторов.
-    let state = [0u8; 256];
-
-    let mut out = [0u16; 8];
-    let rc = unsafe {
-        ToUnicodeEx(
-            vk_g,
-            scan,
-            state.as_ptr(),
-            out.as_mut_ptr(),
-            out.len() as i32,
-            0,
-            hkl,
-        )
-    };
-
-    if rc <= 0 {
-        return Ok(false);
-    }
-
-    let ch = char::from_u32(out[0] as u32).unwrap_or('\0');
-    Ok(is_cyrillic_char(ch))
-}
 
 static KEY_TX: Mutex<Option<mpsc::Sender<KeyboardEvent>>> = Mutex::new(None);
 

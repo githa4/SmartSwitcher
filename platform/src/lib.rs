@@ -1,12 +1,6 @@
 #[derive(Debug, Default, Clone)]
 pub struct Platform;
 
-#[derive(Debug, Default, Clone)]
-pub struct ForegroundWindowInfo {
-    pub title: String,
-    pub process_name: Option<String>,
-}
-
 impl Platform {
     pub fn new() -> Self {
         Self
@@ -65,20 +59,6 @@ impl Platform {
         windows::is_forbidden_context(forbidden)
     }
 
-    #[cfg(target_os = "windows")]
-    pub fn is_active_layout_cyrillic(&self) -> anyhow::Result<bool> {
-        windows::is_active_layout_cyrillic()
-    }
-
-    #[cfg(target_os = "windows")]
-    pub fn get_foreground_window_info(&self) -> anyhow::Result<ForegroundWindowInfo> {
-        let info = windows::get_active_window_info()?;
-        Ok(ForegroundWindowInfo {
-            title: info.title,
-            process_name: info.process_name,
-        })
-    }
-
     #[cfg(not(target_os = "windows"))]
     pub fn switch_to_next_layout(
         &self,
@@ -125,16 +105,6 @@ impl Platform {
         _forbidden: &smart_switcher_shared_types::config::ForbiddenContextsConfig,
     ) -> anyhow::Result<bool> {
         Ok(false)
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    pub fn is_active_layout_cyrillic(&self) -> anyhow::Result<bool> {
-        Ok(false)
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    pub fn get_foreground_window_info(&self) -> anyhow::Result<ForegroundWindowInfo> {
-        Ok(ForegroundWindowInfo::default())
     }
 }
 
