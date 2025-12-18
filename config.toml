@@ -1,5 +1,5 @@
 [logging]
-level = "info"  # info, debug, trace
+level = "debug"  # info, debug, trace
 output = "console"  # console, file:/path/to/logfile
 
 [layout_switcher]

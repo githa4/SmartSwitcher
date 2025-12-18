@@ -2,7 +2,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use smart_switcher_core::{Module, ModuleContext, ModuleHandle};
 use smart_switcher_shared_types::{config::LayoutSwitcherConfig, AppEvent};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 pub struct LayoutSwitcherModule {
     config: LayoutSwitcherConfig,
@@ -26,13 +26,19 @@ impl Module for LayoutSwitcherModule {
         let platform = ctx.platform.clone();
 
         let join = tokio::spawn(async move {
+            let min_autocorrect_len = 5usize;
+
+            info!("✅ layout_switcher запущен");
+            info!("   Hotkey: {} (переключение делает Windows)", config.hotkey);
             info!(
-                enabled = config.enabled,
-                auto_detect = config.auto_detect,
-                detect_threshold = config.detect_threshold,
-                hotkey = %config.hotkey,
-                "layout_switcher started",
+                "   Авто-исправление: {}",
+                if config.auto_detect { "включено" } else { "выключено" }
             );
+            if config.auto_detect {
+                info!("   Порог детекта (минимум клавиш): {}", config.detect_threshold);
+                info!("   Мин. длина слова для автоисправления: {}", min_autocorrect_len);
+            }
+            info!("   Для теста: набери 'ghbdtn' + пробел в Блокноте (EN раскладка)");
 
             let hotkey = config.hotkey.to_lowercase();
             if hotkey != "alt+shift" {
@@ -44,6 +50,7 @@ impl Module for LayoutSwitcherModule {
             let mut hotkey_fired = false;
 
             let mut word_keys: Vec<char> = Vec::new();
+            let mut word_started_in_cyrillic: Option<bool> = None;
 
             let is_letter_vk = |vk: u32| (0x41..=0x5A).contains(&vk);
             let vk_to_letter = |vk: u32, shift: bool| {
@@ -58,7 +65,6 @@ impl Module for LayoutSwitcherModule {
             let en_vowels = |s: &str| s.chars().any(|c| matches!(c, 'a'|'e'|'i'|'o'|'u'|'y'|'A'|'E'|'I'|'O'|'U'|'Y'));
             let ru_vowels = |s: &str| s.chars().any(|c| matches!(c, 'а'|'е'|'ё'|'и'|'о'|'у'|'ы'|'э'|'ю'|'я'|'А'|'Е'|'Ё'|'И'|'О'|'У'|'Ы'|'Э'|'Ю'|'Я'));
 
-            let min_autocorrect_len = 5usize;
             let is_all_upper_ascii = |s: &str| {
                 let mut has_letters = false;
                 for ch in s.chars() {
@@ -122,7 +128,7 @@ impl Module for LayoutSwitcherModule {
             loop {
                 match rx.recv().await.context("event bus recv")? {
                     AppEvent::ShutdownRequested => {
-                        info!("layout_switcher shutting down");
+                        info!("⏹️  layout_switcher остановлен");
                         break;
                     }
                     AppEvent::Keyboard(ev) => {
@@ -146,14 +152,10 @@ impl Module for LayoutSwitcherModule {
 
                         if is_alt_down && is_shift_down && !hotkey_fired {
                             hotkey_fired = true;
-                            let switched = platform
-                                .switch_to_next_layout(&config.forbidden_contexts)
-                                .context("switch layout")?;
-                            if switched {
-                                info!("layout switched");
-                            } else {
-                                info!("layout switch skipped (forbidden or unavailable)");
-                            }
+                            // Важно: НЕ выполняем переключение сами.
+                            // Иначе при 3+ языках можно получить двойное переключение
+                            // (системное + наше) и ощущение "не даёт переключать".
+                            info!("⌨️ Alt+Shift: переключение делает Windows");
                         }
 
                         if !config.auto_detect {
@@ -168,46 +170,122 @@ impl Module for LayoutSwitcherModule {
                             0x08 => {
                                 // Backspace
                                 word_keys.pop();
+                                if word_keys.is_empty() {
+                                    word_started_in_cyrillic = None;
+                                }
                             }
-                            0x20 | 0x0D => {
-                                // Space / Enter
+                            0x20 => {
+                                // Space
                                 if word_keys.len() >= config.detect_threshold as usize {
                                     let lang = platform.get_active_lang_id().unwrap_or(0);
-                                    let is_en = lang == 0x0409;
-                                    let is_ru = lang == 0x0419;
+                                    let commit_is_cyrillic = platform
+                                        .is_active_layout_cyrillic()
+                                        .unwrap_or(false);
+                                    let commit_is_latin = !commit_is_cyrillic;
+
+                                    // Ключевое: направление определяем по раскладке, в которой НАЧАЛИ слово.
+                                    // Это лечит кейс Notepad: набрал в EN, переключил Alt+Shift, нажал пробел.
+                                    let word_is_cyrillic = word_started_in_cyrillic.unwrap_or(commit_is_cyrillic);
+                                    let word_is_latin = !word_is_cyrillic;
 
                                     let typed: String = word_keys.iter().collect();
+
+                                    // Важно: мы логируем физические латинские клавиши (VK A-Z).
+                                    // Если активна кириллица, то в поле ввода пользователь видит would_be_cyrillic.
+                                    let would_be_cyrillic: String =
+                                        typed.chars().map(map_en_to_ru).collect();
+                                    let screen_guess = if commit_is_cyrillic {
+                                        would_be_cyrillic.as_str()
+                                    } else {
+                                        typed.as_str()
+                                    };
+
+                                    let window = platform
+                                        .get_foreground_window_info()
+                                        .ok()
+                                        .unwrap_or_default();
+
+                                    debug!(
+                                        word = %typed,
+                                        screen_guess = %screen_guess,
+                                        window_title = %window.title,
+                                        window_process = %window.process_name.unwrap_or_default(),
+                                        lang = format_args!("0x{lang:04X}"),
+                                        commit_is_latin,
+                                        commit_is_cyrillic,
+                                        word_is_latin,
+                                        word_is_cyrillic,
+                                        "space commit"
+                                    );
 
                                     // Консервативный фильтр: не трогаем короткие слова и акронимы.
                                     if typed.len() < min_autocorrect_len
                                         || is_all_upper_ascii(&typed)
                                         || is_mixed_case_ascii(&typed)
                                     {
+                                        debug!(
+                                            word = %typed,
+                                            lang = format_args!("0x{lang:04X}"),
+                                            "auto-correct skipped (filter)"
+                                        );
                                         word_keys.clear();
                                         continue;
                                     }
 
-                                    if is_en {
+                                    if word_is_latin {
                                         // EN (0x0409) -> RU (0x0419)
                                         let converted: String = typed.chars().map(map_en_to_ru).collect();
 
                                         if !en_vowels(&typed) && ru_vowels(&converted) {
-                                            let _ = platform
-                                                .set_layout_by_lang_id(&config.forbidden_contexts, 0x0419)
-                                                .ok();
-                                            let erased = platform
-                                                .send_backspaces(&config.forbidden_contexts, word_keys.len())
-                                                .unwrap_or(false);
-                                            if erased {
-                                                let injected = platform
-                                                    .send_unicode_text(&config.forbidden_contexts, &converted)
-                                                    .unwrap_or(false);
-                                                if injected {
-                                                    info!(from = %typed, to = %converted, "auto-detect corrected");
-                                                }
+                                            match platform.set_layout_by_lang_id(
+                                                &config.forbidden_contexts,
+                                                0x0419,
+                                            ) {
+                                                Ok(true) => debug!("set layout RU: ok"),
+                                                Ok(false) => debug!("set layout RU: skipped/failed"),
+                                                Err(e) => debug!(error = %e, "set layout RU: error"),
                                             }
+                                            // +1 для стирания пробела, который уже попал в поле
+                                            let erased = match platform.send_backspaces(
+                                                &config.forbidden_contexts,
+                                                word_keys.len() + 1,
+                                            ) {
+                                                Ok(v) => v,
+                                                Err(e) => {
+                                                    debug!(error = %e, "send_backspaces failed");
+                                                    false
+                                                }
+                                            };
+                                            if erased {
+                                                // Вставляем исправленный текст + пробел
+                                                let text_with_space = format!("{} ", converted);
+                                                let injected = match platform.send_unicode_text(
+                                                    &config.forbidden_contexts,
+                                                    &text_with_space,
+                                                ) {
+                                                    Ok(v) => v,
+                                                    Err(e) => {
+                                                        debug!(error = %e, "send_unicode_text failed");
+                                                        false
+                                                    }
+                                                };
+                                                if injected {
+                                                    info!("🔤 Исправлено EN→RU: '{}' → '{}'", typed, converted);
+                                                } else {
+                                                    debug!("send_unicode_text returned false");
+                                                }
+                                            } else {
+                                                debug!("send_backspaces returned false");
+                                            }
+                                        } else {
+                                            debug!(
+                                                word = %typed,
+                                                converted = %converted,
+                                                lang = format_args!("0x{lang:04X}"),
+                                                "auto-correct skipped (heuristic EN→RU)"
+                                            );
                                         }
-                                    } else if is_ru {
+                                    } else if word_is_cyrillic {
                                         // RU (0x0419) -> EN (0x0409)
                                         // Тут `typed` — это физические латинские клавиши.
                                         // Если пользователь хотел английское слово, оно уже находится в `typed`.
@@ -215,34 +293,86 @@ impl Module for LayoutSwitcherModule {
                                         // Консервативно считаем "похоже на русское" если доля русских гласных высокая.
                                         // Тогда не исправляем. Исправляем только если "как будто RU" выглядит плохо.
                                         if en_vowels(&typed) && ru_vowel_ratio(&would_be_ru) < 0.25 {
-                                            let _ = platform
-                                                .set_layout_by_lang_id(&config.forbidden_contexts, 0x0409)
-                                                .ok();
-                                            let erased = platform
-                                                .send_backspaces(&config.forbidden_contexts, word_keys.len())
-                                                .unwrap_or(false);
-                                            if erased {
-                                                let injected = platform
-                                                    .send_unicode_text(&config.forbidden_contexts, &typed)
-                                                    .unwrap_or(false);
-                                                if injected {
-                                                    info!(from = %typed, to = %typed, "auto-detect corrected");
-                                                }
+                                            match platform.set_layout_by_lang_id(
+                                                &config.forbidden_contexts,
+                                                0x0409,
+                                            ) {
+                                                Ok(true) => debug!("set layout EN: ok"),
+                                                Ok(false) => debug!("set layout EN: skipped/failed"),
+                                                Err(e) => debug!(error = %e, "set layout EN: error"),
                                             }
+                                            // +1 для стирания пробела
+                                            let erased = match platform.send_backspaces(
+                                                &config.forbidden_contexts,
+                                                word_keys.len() + 1,
+                                            ) {
+                                                Ok(v) => v,
+                                                Err(e) => {
+                                                    debug!(error = %e, "send_backspaces failed");
+                                                    false
+                                                }
+                                            };
+                                            if erased {
+                                                let text_with_space = format!("{} ", typed);
+                                                let injected = match platform.send_unicode_text(
+                                                    &config.forbidden_contexts,
+                                                    &text_with_space,
+                                                ) {
+                                                    Ok(v) => v,
+                                                    Err(e) => {
+                                                        debug!(error = %e, "send_unicode_text failed");
+                                                        false
+                                                    }
+                                                };
+                                                if injected {
+                                                    info!("🔤 Исправлено RU→EN: набрано в RU раскладке, исправлено на '{}'", typed);
+                                                } else {
+                                                    debug!("send_unicode_text returned false");
+                                                }
+                                            } else {
+                                                debug!("send_backspaces returned false");
+                                            }
+                                        } else {
+                                            debug!(
+                                                word = %typed,
+                                                would_be_ru = %would_be_ru,
+                                                lang = format_args!("0x{lang:04X}"),
+                                                "auto-correct skipped (heuristic RU→EN)"
+                                            );
                                         }
+                                    } else {
+                                        debug!(
+                                            word = %typed,
+                                            lang = format_args!("0x{lang:04X}"),
+                                            "auto-correct skipped (unknown layout class)"
+                                        );
                                     }
                                 }
 
                                 word_keys.clear();
+                                word_started_in_cyrillic = None;
+                            }
+                            0x0D => {
+                                // Enter
+                                // Консервативно: НЕ автоисправляем на Enter, чтобы не ломать переносы строк
+                                // (в разных приложениях это может быть \n или \r\n).
+                                word_keys.clear();
+                                word_started_in_cyrillic = None;
                             }
                             vk if is_letter_vk(vk) => {
                                 // letters: collect physical key as latin char
+                                if word_keys.is_empty() {
+                                    word_started_in_cyrillic = Some(
+                                        platform.is_active_layout_cyrillic().unwrap_or(false),
+                                    );
+                                }
                                 let ch = vk_to_letter(vk, is_shift_down);
                                 word_keys.push(ch);
                             }
                             _ => {
                                 // delimiter / control
                                 word_keys.clear();
+                                word_started_in_cyrillic = None;
                             }
                         }
                     }
