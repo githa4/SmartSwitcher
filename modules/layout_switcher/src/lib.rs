@@ -61,9 +61,6 @@ impl Module for LayoutSwitcherModule {
                 }
             };
 
-            let en_vowels = |s: &str| s.chars().any(|c| matches!(c, 'a'|'e'|'i'|'o'|'u'|'y'|'A'|'E'|'I'|'O'|'U'|'Y'));
-            let ru_vowels = |s: &str| s.chars().any(|c| matches!(c, 'а'|'е'|'ё'|'и'|'о'|'у'|'ы'|'э'|'ю'|'я'|'А'|'Е'|'Ё'|'И'|'О'|'У'|'Ы'|'Э'|'Ю'|'Я'));
-
             let is_all_upper_ascii = |s: &str| {
                 let mut has_letters = false;
                 for ch in s.chars() {
@@ -90,36 +87,7 @@ impl Module for LayoutSwitcherModule {
                 has_lower && has_upper
             };
 
-            let ru_vowel_ratio = |s: &str| {
-                let mut vowels = 0usize;
-                let mut letters = 0usize;
-                for ch in s.chars() {
-                    if ch.is_alphabetic() {
-                        letters += 1;
-                    }
-                    if matches!(
-                        ch,
-                        'а' | 'е' | 'ё' | 'и' | 'о' | 'у' | 'ы' | 'э' | 'ю' | 'я'
-                            | 'А' | 'Е' | 'Ё' | 'И' | 'О' | 'У' | 'Ы' | 'Э' | 'Ю' | 'Я'
-                    ) {
-                        vowels += 1;
-                    }
-                }
-                if letters == 0 {
-                    0.0
-                } else {
-                    vowels as f32 / letters as f32
-                }
-            };
-
-            let map_en_to_ru = |ch: char| -> char {
-                match ch.to_ascii_lowercase() {
-                    'q' => 'й', 'w' => 'ц', 'e' => 'у', 'r' => 'к', 't' => 'е', 'y' => 'н', 'u' => 'г', 'i' => 'ш', 'o' => 'щ', 'p' => 'з',
-                    'a' => 'ф', 's' => 'ы', 'd' => 'в', 'f' => 'а', 'g' => 'п', 'h' => 'р', 'j' => 'о', 'k' => 'л', 'l' => 'д',
-                    'z' => 'я', 'x' => 'ч', 'c' => 'с', 'v' => 'м', 'b' => 'и', 'n' => 'т', 'm' => 'ь',
-                    other => other,
-                }
-            };
+            let map_en_to_ru = |ch: char| -> char { map_en_to_ru(ch) };
 
             let is_alt_vk = |vk: u32| matches!(vk, 0x12 | 0xA4 | 0xA5);
             let is_shift_vk = |vk: u32| matches!(vk, 0x10 | 0xA0 | 0xA1);
@@ -173,8 +141,24 @@ impl Module for LayoutSwitcherModule {
                             0x20 => {
                                 // Space
                                 if word_keys.len() >= config.detect_threshold as usize {
+                                    // Fail-closed: никаких действий в запрещённых контекстах.
+                                    // Сразу выходим, чтобы не "подвешивать" эвристики в терминалах/менеджерах паролей.
+                                    match platform.is_forbidden_context(&config.forbidden_contexts) {
+                                        Ok(true) => {
+                                            debug!("auto-correct skipped (forbidden context)");
+                                            word_keys.clear();
+                                            continue;
+                                        }
+                                        Ok(false) => {}
+                                        Err(e) => {
+                                            debug!(error = %e, "auto-correct skipped (forbidden context check failed)");
+                                            word_keys.clear();
+                                            continue;
+                                        }
+                                    }
+
                                     let lang = platform.get_active_lang_id().unwrap_or(0);
-                                    let commit_is_cyrillic = matches!(lang, 0x0419 | 0x0422 | 0x0423);
+                                    let commit_is_cyrillic = is_cyrillic_lang_id(lang);
                                     let commit_is_latin = !commit_is_cyrillic;
 
                                     let typed: String = word_keys.iter().collect();
@@ -205,7 +189,7 @@ impl Module for LayoutSwitcherModule {
                                         // EN (0x0409) -> RU (0x0419)
                                         let converted: String = typed.chars().map(map_en_to_ru).collect();
 
-                                        if !en_vowels(&typed) && ru_vowels(&converted) {
+                                        if should_autocorrect_en_to_ru(&typed, &converted) {
                                             match platform.set_layout_by_lang_id(
                                                 &config.forbidden_contexts,
                                                 0x0419,
@@ -259,9 +243,10 @@ impl Module for LayoutSwitcherModule {
                                         // Тут `typed` — это физические латинские клавиши.
                                         // Если пользователь хотел английское слово, оно уже находится в `typed`.
                                         let would_be_ru: String = typed.chars().map(map_en_to_ru).collect();
-                                        // Консервативно считаем "похоже на русское" если доля русских гласных высокая.
-                                        // Тогда не исправляем. Исправляем только если "как будто RU" выглядит плохо.
-                                        if en_vowels(&typed) && ru_vowel_ratio(&would_be_ru) < 0.25 {
+
+                                        // Если то, что видно на экране, выглядит как нормальное русское слово — не трогаем.
+                                        // Исправляем только когда "экранное RU" выглядит как мусор, а `typed` похоже на EN.
+                                        if should_autocorrect_ru_to_en(&typed, &would_be_ru) {
                                             match platform.set_layout_by_lang_id(
                                                 &config.forbidden_contexts,
                                                 0x0409,
@@ -344,5 +329,192 @@ impl Module for LayoutSwitcherModule {
         });
 
         Ok(ModuleHandle::new(join))
+    }
+}
+
+fn primary_lang_id(lang_id: u16) -> u16 {
+    lang_id & 0x03FF
+}
+
+fn is_cyrillic_lang_id(lang_id: u16) -> bool {
+    matches!(primary_lang_id(lang_id), 0x0019 | 0x0022 | 0x0023)
+}
+
+fn is_ascii_word(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+fn map_en_to_ru(ch: char) -> char {
+    match ch.to_ascii_lowercase() {
+        'q' => 'й',
+        'w' => 'ц',
+        'e' => 'у',
+        'r' => 'к',
+        't' => 'е',
+        'y' => 'н',
+        'u' => 'г',
+        'i' => 'ш',
+        'o' => 'щ',
+        'p' => 'з',
+        'a' => 'ф',
+        's' => 'ы',
+        'd' => 'в',
+        'f' => 'а',
+        'g' => 'п',
+        'h' => 'р',
+        'j' => 'о',
+        'k' => 'л',
+        'l' => 'д',
+        'z' => 'я',
+        'x' => 'ч',
+        'c' => 'с',
+        'v' => 'м',
+        'b' => 'и',
+        'n' => 'т',
+        'm' => 'ь',
+        other => other,
+    }
+}
+
+fn en_vowel_ratio(s: &str) -> f32 {
+    let mut vowels = 0usize;
+    let mut letters = 0usize;
+
+    for ch in s.chars() {
+        if ch.is_ascii_alphabetic() {
+            letters += 1;
+            if matches!(
+                ch,
+                'a' | 'e' | 'i' | 'o' | 'u' | 'y' | 'A' | 'E' | 'I' | 'O' | 'U' | 'Y'
+            ) {
+                vowels += 1;
+            }
+        }
+    }
+
+    if letters == 0 {
+        0.0
+    } else {
+        vowels as f32 / letters as f32
+    }
+}
+
+fn ru_vowel_ratio(s: &str) -> f32 {
+    let mut vowels = 0usize;
+    let mut letters = 0usize;
+
+    for ch in s.chars() {
+        if ch.is_alphabetic() {
+            letters += 1;
+        }
+        if matches!(
+            ch,
+            'а' | 'е' | 'ё' | 'и' | 'о' | 'у' | 'ы' | 'э' | 'ю' | 'я'
+                | 'А' | 'Е' | 'Ё' | 'И' | 'О' | 'У' | 'Ы' | 'Э' | 'Ю' | 'Я'
+        ) {
+            vowels += 1;
+        }
+    }
+
+    if letters == 0 {
+        0.0
+    } else {
+        vowels as f32 / letters as f32
+    }
+}
+
+fn looks_like_english_word(typed: &str) -> bool {
+    if !is_ascii_word(typed) {
+        return false;
+    }
+
+    let ratio = en_vowel_ratio(typed);
+    if ratio < 0.15 || ratio > 0.70 {
+        return false;
+    }
+
+    // Небольшой бонус к уверенности: частые EN биграммы.
+    let lower = typed.to_ascii_lowercase();
+    ["th", "sh", "ch", "ck", "qu", "ng", "oo", "ee"]
+        .iter()
+        .any(|b| lower.contains(b))
+        || ratio >= 0.25
+}
+
+fn should_autocorrect_en_to_ru(typed: &str, converted: &str) -> bool {
+    if !is_ascii_word(typed) {
+        return false;
+    }
+    if looks_like_english_word(typed) {
+        return false;
+    }
+
+    // Если в русском варианте есть "нормальная" гласность — это хороший сигнал,
+    // что пользователь хотел русское слово.
+    ru_vowel_ratio(converted) >= 0.20
+}
+
+fn should_autocorrect_ru_to_en(typed: &str, would_be_ru: &str) -> bool {
+    if !is_ascii_word(typed) {
+        return false;
+    }
+    if !looks_like_english_word(typed) {
+        return false;
+    }
+
+    // Если "экранное" RU похоже на реальное русское слово — не трогаем.
+    // Исправляем только когда оно выглядит как мусор (слишком мало русских гласных).
+    // Порог подобран так, чтобы исправлялись типовые кейсы вроде "hello" → "руддщ".
+    ru_vowel_ratio(would_be_ru) < 0.25
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_primary_lang_id() {
+        assert_eq!(primary_lang_id(0x0419), 0x0019);
+        assert_eq!(primary_lang_id(0x0422), 0x0022);
+        assert_eq!(primary_lang_id(0x0423), 0x0023);
+    }
+
+    #[test]
+    fn test_lang_classification() {
+        assert!(is_cyrillic_lang_id(0x0419));
+        assert!(is_cyrillic_lang_id(0x0422));
+        assert!(is_cyrillic_lang_id(0x0423));
+        assert!(!is_cyrillic_lang_id(0x0409));
+    }
+
+    #[test]
+    fn test_map_en_to_ru_basic() {
+        let typed = "ghbdtn";
+        let converted: String = typed.chars().map(map_en_to_ru).collect();
+        assert_eq!(converted, "привет");
+    }
+
+    #[test]
+    fn test_should_autocorrect_en_to_ru() {
+        let typed = "ghbdtn";
+        let converted: String = typed.chars().map(map_en_to_ru).collect();
+        assert!(should_autocorrect_en_to_ru(typed, &converted));
+
+        let typed = "hello";
+        let converted: String = typed.chars().map(map_en_to_ru).collect();
+        assert!(!should_autocorrect_en_to_ru(typed, &converted));
+    }
+
+    #[test]
+    fn test_should_autocorrect_ru_to_en() {
+        // Пользователь в RU раскладке хотел EN: 'hello' на экране выглядит как 'руддщ'.
+        let typed = "hello";
+        let would_be_ru: String = typed.chars().map(map_en_to_ru).collect();
+        assert!(should_autocorrect_ru_to_en(typed, &would_be_ru));
+
+        // Пользователь реально набирал русское: на экране это похоже на слово.
+        let typed = "ghbdtn";
+        let would_be_ru: String = typed.chars().map(map_en_to_ru).collect();
+        assert!(!should_autocorrect_ru_to_en(typed, &would_be_ru));
     }
 }
