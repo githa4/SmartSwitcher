@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+  "app",
+  "core",
+  "platform",
+  "shared_types",
+  "modules/layout_switcher",
+  "modules/spell_checker",
+]

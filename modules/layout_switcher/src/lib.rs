@@ -1,14 +1,50 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+use anyhow::Context;
+use async_trait::async_trait;
+use smart_switcher_core::{Module, ModuleContext, ModuleHandle};
+use smart_switcher_shared_types::{config::LayoutSwitcherConfig, AppEvent};
+use tracing::info;
+
+pub struct LayoutSwitcherModule {
+    config: LayoutSwitcherConfig,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl LayoutSwitcherModule {
+    pub fn new(config: LayoutSwitcherConfig) -> Self {
+        Self { config }
+    }
+}
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+#[async_trait]
+impl Module for LayoutSwitcherModule {
+    fn name(&self) -> &'static str {
+        "layout_switcher"
+    }
+
+    async fn start(&self, ctx: ModuleContext) -> anyhow::Result<ModuleHandle> {
+        let mut rx = ctx.bus.subscribe();
+        let config = self.config.clone();
+
+        let join = tokio::spawn(async move {
+            info!(
+                enabled = config.enabled,
+                auto_detect = config.auto_detect,
+                detect_threshold = config.detect_threshold,
+                hotkey = %config.hotkey,
+                "layout_switcher started",
+            );
+
+            loop {
+                match rx.recv().await.context("event bus recv")? {
+                    AppEvent::ShutdownRequested => {
+                        info!("layout_switcher shutting down");
+                        break;
+                    }
+                }
+            }
+
+            Ok(())
+        });
+
+        Ok(ModuleHandle::new(join))
     }
 }

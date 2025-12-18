@@ -1,6 +1,14 @@
 [package]
-name = "app"
+name = "smart_switcher"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1"
+smart_switcher_core = { path = "../core" }
+smart_switcher_shared_types = { path = "../shared_types" }
+layout_switcher = { path = "../modules/layout_switcher" }
+spell_checker = { path = "../modules/spell_checker" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

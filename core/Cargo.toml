@@ -1,6 +1,13 @@
 [package]
-name = "core"
+name = "smart_switcher_core"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1"
+async-trait = "0.1"
+smart_switcher_platform = { path = "../platform" }
+smart_switcher_shared_types = { path = "../shared_types" }
+tokio = { version = "1", features = ["rt", "sync"] }
+toml = "0.8"
+tracing = "0.1"

@@ -5,6 +5,33 @@
 
 ---
 
+#️⃣ [0.1.3] 📅 2025-12-18 🕤 03:45
+
+▶️ **Тема коммита:** `🦀 Этап 0: Cargo workspace + конфиг + каркас модулей`
+
+✅ Добавлено
+- 🧰 Cargo workspace и crates:
+  - `Cargo.toml` (workspace)
+  - `app/` (bin)
+  - `core/` (lib)
+  - `platform/` (lib, заглушка)
+  - `shared_types/` (lib: config/events)
+  - `modules/layout_switcher/` (lib)
+  - `modules/spell_checker/` (lib)
+- ⚙️ Базовый `config.toml` в корне (spell_checker выключен по умолчанию)
+
+✅ Изменено
+- —
+
+✅ Исправлено
+- —
+
+✅ Удалено
+- —
+
+
+---
+
 #️⃣ [0.1.2] 📅 2025-12-18 🕤 03:25
 
 ▶️ **Тема коммита:** `📚 Документация: доп.шаблоны безопасность/модули/релизы/how-to`
