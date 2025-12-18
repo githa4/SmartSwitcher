@@ -84,6 +84,7 @@ pub struct SpellCheckerConfig {
     pub language: String,
     pub cache_size: usize,
     pub api_config: SpellCheckerApiConfig,
+    pub forbidden_contexts: ForbiddenContextsConfig,
 }
 
 impl Default for SpellCheckerConfig {
@@ -94,6 +95,7 @@ impl Default for SpellCheckerConfig {
             language: "ru".to_string(),
             cache_size: 1000,
             api_config: SpellCheckerApiConfig::default(),
+            forbidden_contexts: ForbiddenContextsConfig::default(),
         }
     }
 }

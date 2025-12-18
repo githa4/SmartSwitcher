@@ -33,7 +33,7 @@ const ACTIVE_WINDOW_CACHE_TTL: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 struct ActiveWindowCache {
-    hwnd: *mut core::ffi::c_void,
+    hwnd_key: usize,
     info: ActiveWindowInfo,
     updated_at: Instant,
 }
@@ -248,9 +248,12 @@ pub fn get_active_window_info() -> anyhow::Result<ActiveWindowInfo> {
 }
 
 fn get_window_info_cached(hwnd: *mut core::ffi::c_void) -> anyhow::Result<ActiveWindowInfo> {
+    let hwnd_key = hwnd as usize;
     if let Ok(guard) = ACTIVE_WINDOW_CACHE.lock() {
         if let Some(entry) = guard.as_ref() {
-            if entry.hwnd == hwnd && entry.updated_at.elapsed() <= ACTIVE_WINDOW_CACHE_TTL {
+            if entry.hwnd_key == hwnd_key
+                && entry.updated_at.elapsed() <= ACTIVE_WINDOW_CACHE_TTL
+            {
                 return Ok(entry.info.clone());
             }
         }
@@ -263,7 +266,7 @@ fn get_window_info_cached(hwnd: *mut core::ffi::c_void) -> anyhow::Result<Active
 
     if let Ok(mut guard) = ACTIVE_WINDOW_CACHE.lock() {
         *guard = Some(ActiveWindowCache {
-            hwnd,
+            hwnd_key,
             info: info.clone(),
             updated_at: Instant::now(),
         });
@@ -310,6 +313,16 @@ pub fn switch_to_next_layout(forbidden: &ForbiddenContextsConfig) -> anyhow::Res
     let ok = unsafe { PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, next as isize) };
 
     Ok(ok != 0)
+}
+
+pub fn is_forbidden_context(forbidden: &ForbiddenContextsConfig) -> anyhow::Result<bool> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return Ok(true);
+    }
+
+    let info = get_window_info_cached(hwnd)?;
+    Ok(is_forbidden(&info, forbidden))
 }
 
 fn lo_word(value: isize) -> u16 {

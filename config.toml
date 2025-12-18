@@ -19,6 +19,11 @@ api = "languagetool"
 language = "ru"
 cache_size = 1000
 
+[spell_checker.forbidden_contexts]
+blocked_processes = ["cmd", "powershell", "windowsterminal", "conemu", "keepass", "1password", "bitwarden"]
+blocked_windows = ["- Password", "KeePass", "1Password", "Bitwarden"]
+blocked_input_types = ["password"]
+
 [spell_checker.api_config]
 base_url = "https://api.languagetool.org"
 

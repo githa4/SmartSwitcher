@@ -51,6 +51,14 @@ impl Platform {
         windows::send_unicode_text(forbidden, text)
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn is_forbidden_context(
+        &self,
+        forbidden: &smart_switcher_shared_types::config::ForbiddenContextsConfig,
+    ) -> anyhow::Result<bool> {
+        windows::is_forbidden_context(forbidden)
+    }
+
     #[cfg(not(target_os = "windows"))]
     pub fn switch_to_next_layout(
         &self,
@@ -87,6 +95,14 @@ impl Platform {
         &self,
         _forbidden: &smart_switcher_shared_types::config::ForbiddenContextsConfig,
         _text: &str,
+    ) -> anyhow::Result<bool> {
+        Ok(false)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub fn is_forbidden_context(
+        &self,
+        _forbidden: &smart_switcher_shared_types::config::ForbiddenContextsConfig,
     ) -> anyhow::Result<bool> {
         Ok(false)
     }

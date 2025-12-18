@@ -153,7 +153,8 @@ impl Module for LayoutSwitcherModule {
                                         // RU (0x0419) -> EN (0x0409)
                                         // Тут `typed` — это физические латинские клавиши.
                                         // Если пользователь хотел английское слово, оно уже находится в `typed`.
-                                        if en_vowels(&typed) {
+                                        let would_be_ru: String = typed.chars().map(map_en_to_ru).collect();
+                                        if en_vowels(&typed) && !ru_vowels(&would_be_ru) {
                                             let _ = platform
                                                 .set_layout_by_lang_id(&config.forbidden_contexts, 0x0409)
                                                 .ok();
