@@ -17,6 +17,17 @@
 
 macOS 12+ поддерживается как каркас после MVP: сборка, запуск, best-effort hook.
 
+Цель: подключить macOS без изменения модулей — только реализовать платформенный бэкенд.
+
+Контракт (текущий Platform API, реализовать в `smart_switcher_platform`):
+- `start_keyboard_hook()` (опционально для MVP; можно начать с ручных действий)
+- `switch_to_next_layout(forbidden_contexts)`
+- `get_active_lang_id()`
+- `set_layout_by_lang_id(forbidden_contexts, lang_id)`
+- `send_backspaces(forbidden_contexts, count)`
+- `send_unicode_text(forbidden_contexts, text)`
+- `is_forbidden_context(forbidden_contexts)`
+
 ---
 
 ## Перехват

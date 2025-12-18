@@ -17,6 +17,20 @@
 
 Linux MVP поддерживаем как X11 best-effort.
 
+Цель: подключить Linux (X11) без изменения модулей — только реализовать платформенный бэкенд.
+
+Примечание:
+- Linux-бэкенды планируются под feature-флагами платформы: `smart_switcher_platform/x11`.
+
+Контракт (текущий Platform API, реализовать в `smart_switcher_platform`):
+- `start_keyboard_hook()` (best-effort)
+- `switch_to_next_layout(forbidden_contexts)`
+- `get_active_lang_id()`
+- `set_layout_by_lang_id(forbidden_contexts, lang_id)`
+- `send_backspaces(forbidden_contexts, count)`
+- `send_unicode_text(forbidden_contexts, text)`
+- `is_forbidden_context(forbidden_contexts)`
+
 ---
 
 ## Перехват

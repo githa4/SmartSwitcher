@@ -1,10 +1,20 @@
 use anyhow::Context;
 use async_trait::async_trait;
+use lru::LruCache;
 use reqwest::Client;
 use serde::Deserialize;
 use smart_switcher_core::{Module, ModuleContext, ModuleHandle};
 use smart_switcher_shared_types::{config::SpellCheckerConfig, AppEvent};
 use tracing::{info, warn};
+use std::num::NonZeroUsize;
+
+const MAX_WORDS_PER_COMMIT: usize = 12;
+
+#[derive(Debug, Clone)]
+struct CachedSpellResult {
+    issues: usize,
+    first_message: Option<String>,
+}
 
 pub struct SpellCheckerModule {
     config: SpellCheckerConfig,
@@ -68,6 +78,10 @@ impl Module for SpellCheckerModule {
             let mut is_shift_down = false;
             let mut buffer = String::new();
 
+            let mut cache = LruCache::<(String, String), CachedSpellResult>::new(
+                NonZeroUsize::new(config.cache_size.max(1)).expect("cache size > 0"),
+            );
+
             loop {
                 match rx.recv().await.context("event bus recv")? {
                     AppEvent::ShutdownRequested => {
@@ -110,6 +124,11 @@ impl Module for SpellCheckerModule {
                                     continue;
                                 }
 
+                                let commit_for_check = last_n_words(&commit, MAX_WORDS_PER_COMMIT);
+                                if commit_for_check.is_empty() {
+                                    continue;
+                                }
+
                                 let forbidden = platform
                                     .is_forbidden_context(&config.forbidden_contexts)
                                     .unwrap_or(true);
@@ -122,16 +141,38 @@ impl Module for SpellCheckerModule {
                                     continue;
                                 }
 
-                                match languagetool_check(&client, &config, &commit).await {
+                                let cache_key = (config.language.clone(), commit_for_check.clone());
+                                if let Some(hit) = cache.get(&cache_key).cloned() {
+                                    if hit.issues == 0 {
+                                        info!("spell_checker: no issues (cache)");
+                                    } else {
+                                        warn!(
+                                            issues = hit.issues,
+                                            message = hit.first_message.as_deref().unwrap_or(""),
+                                            "spell_checker: issues found (cache)"
+                                        );
+                                    }
+                                    continue;
+                                }
+
+                                match languagetool_check(&client, &config, &commit_for_check).await {
                                     Ok(result) => {
-                                        if result.matches.is_empty() {
+                                        let issues = result.matches.len();
+                                        let first_message = result.matches.first().map(|m| m.message.clone());
+                                        cache.put(
+                                            cache_key,
+                                            CachedSpellResult {
+                                                issues,
+                                                first_message: first_message.clone(),
+                                            },
+                                        );
+
+                                        if issues == 0 {
                                             info!("spell_checker: no issues");
                                         } else {
-                                            let count = result.matches.len();
-                                            let first = &result.matches[0];
                                             warn!(
-                                                issues = count,
-                                                message = %first.message,
+                                                issues,
+                                                message = first_message.as_deref().unwrap_or(""),
                                                 "spell_checker: issues found"
                                             );
                                         }
@@ -205,4 +246,18 @@ async fn languagetool_check(
     res.json::<LanguageToolResponse>()
         .await
         .context("parse response")
+}
+
+fn last_n_words(text: &str, n: usize) -> String {
+    if n == 0 {
+        return String::new();
+    }
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() {
+        return String::new();
+    }
+
+    let start = words.len().saturating_sub(n);
+    words[start..].join(" ")
 }
