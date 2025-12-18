@@ -123,12 +123,14 @@ impl Module for LayoutSwitcherModule {
                             0x20 | 0x0D => {
                                 // Space / Enter
                                 if word_keys.len() >= config.detect_threshold as usize {
-                                    // EN (0x0409) -> RU (0x0419)
                                     let lang = platform.get_active_lang_id().unwrap_or(0);
                                     let is_en = lang == 0x0409;
+                                    let is_ru = lang == 0x0419;
+
+                                    let typed: String = word_keys.iter().collect();
 
                                     if is_en {
-                                        let typed: String = word_keys.iter().collect();
+                                        // EN (0x0409) -> RU (0x0419)
                                         let converted: String = typed.chars().map(map_en_to_ru).collect();
 
                                         if !en_vowels(&typed) && ru_vowels(&converted) {
@@ -144,6 +146,26 @@ impl Module for LayoutSwitcherModule {
                                                     .unwrap_or(false);
                                                 if injected {
                                                     info!(from = %typed, to = %converted, "auto-detect corrected");
+                                                }
+                                            }
+                                        }
+                                    } else if is_ru {
+                                        // RU (0x0419) -> EN (0x0409)
+                                        // Тут `typed` — это физические латинские клавиши.
+                                        // Если пользователь хотел английское слово, оно уже находится в `typed`.
+                                        if en_vowels(&typed) {
+                                            let _ = platform
+                                                .set_layout_by_lang_id(&config.forbidden_contexts, 0x0409)
+                                                .ok();
+                                            let erased = platform
+                                                .send_backspaces(&config.forbidden_contexts, word_keys.len())
+                                                .unwrap_or(false);
+                                            if erased {
+                                                let injected = platform
+                                                    .send_unicode_text(&config.forbidden_contexts, &typed)
+                                                    .unwrap_or(false);
+                                                if injected {
+                                                    info!(from = %typed, to = %typed, "auto-detect corrected");
                                                 }
                                             }
                                         }

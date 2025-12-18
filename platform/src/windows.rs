@@ -1,6 +1,7 @@
 use std::{
     sync::{mpsc, Mutex},
     thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::Context;
@@ -27,6 +28,17 @@ use windows_sys::Win32::{
 };
 
 static KEY_TX: Mutex<Option<mpsc::Sender<KeyboardEvent>>> = Mutex::new(None);
+
+const ACTIVE_WINDOW_CACHE_TTL: Duration = Duration::from_millis(250);
+
+#[derive(Clone)]
+struct ActiveWindowCache {
+    hwnd: *mut core::ffi::c_void,
+    info: ActiveWindowInfo,
+    updated_at: Instant,
+}
+
+static ACTIVE_WINDOW_CACHE: Mutex<Option<ActiveWindowCache>> = Mutex::new(None);
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
@@ -232,10 +244,32 @@ pub fn get_active_window_info() -> anyhow::Result<ActiveWindowInfo> {
         return Err(anyhow::anyhow!("GetForegroundWindow returned null"));
     }
 
-    Ok(ActiveWindowInfo {
+    get_window_info_cached(hwnd)
+}
+
+fn get_window_info_cached(hwnd: *mut core::ffi::c_void) -> anyhow::Result<ActiveWindowInfo> {
+    if let Ok(guard) = ACTIVE_WINDOW_CACHE.lock() {
+        if let Some(entry) = guard.as_ref() {
+            if entry.hwnd == hwnd && entry.updated_at.elapsed() <= ACTIVE_WINDOW_CACHE_TTL {
+                return Ok(entry.info.clone());
+            }
+        }
+    }
+
+    let info = ActiveWindowInfo {
         title: get_window_title(hwnd)?,
         process_name: get_process_name(hwnd),
-    })
+    };
+
+    if let Ok(mut guard) = ACTIVE_WINDOW_CACHE.lock() {
+        *guard = Some(ActiveWindowCache {
+            hwnd,
+            info: info.clone(),
+            updated_at: Instant::now(),
+        });
+    }
+
+    Ok(info)
 }
 
 pub fn switch_to_next_layout(forbidden: &ForbiddenContextsConfig) -> anyhow::Result<bool> {
@@ -244,10 +278,7 @@ pub fn switch_to_next_layout(forbidden: &ForbiddenContextsConfig) -> anyhow::Res
         return Ok(false);
     }
 
-    let info = ActiveWindowInfo {
-        title: get_window_title(hwnd)?,
-        process_name: get_process_name(hwnd),
-    };
+    let info = get_window_info_cached(hwnd)?;
     if is_forbidden(&info, forbidden) {
         return Ok(false);
     }
@@ -310,10 +341,7 @@ pub fn set_layout_by_lang_id(
         return Ok(false);
     }
 
-    let info = ActiveWindowInfo {
-        title: get_window_title(hwnd)?,
-        process_name: get_process_name(hwnd),
-    };
+    let info = get_window_info_cached(hwnd)?;
     if is_forbidden(&info, forbidden) {
         return Ok(false);
     }
