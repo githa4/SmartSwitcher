@@ -7,6 +7,7 @@ use smart_switcher_core::{Module, ModuleContext, ModuleHandle};
 use smart_switcher_shared_types::{config::SpellCheckerConfig, AppEvent};
 use tracing::{info, warn};
 use std::num::NonZeroUsize;
+use winrt_toast::{Toast, ToastManager};
 
 const MAX_WORDS_PER_COMMIT: usize = 12;
 
@@ -14,6 +15,24 @@ const MAX_WORDS_PER_COMMIT: usize = 12;
 struct CachedSpellResult {
     issues: usize,
     first_message: Option<String>,
+}
+
+fn show_notification(title: &str, message: &str) {
+    std::thread::spawn({
+        let title = title.to_string();
+        let message = message.to_string();
+        move || {
+            if let Err(e) = (|| -> anyhow::Result<()> {
+                let manager = ToastManager::new("smart_switcher");
+                let mut toast = Toast::new();
+                toast.text1(&title).text2(&message);
+                manager.show(&toast)?;
+                Ok(())
+            })() {
+                warn!(error = %e, "failed to show notification");
+            }
+        }
+    });
 }
 
 pub struct SpellCheckerModule {
@@ -175,6 +194,57 @@ impl Module for SpellCheckerModule {
                                                 message = first_message.as_deref().unwrap_or(""),
                                                 "spell_checker: issues found"
                                             );
+
+                                            // Find issues in the last word (conservative approach)
+                                            // commit_for_check contains last_n_words, we calculate text length
+                                            let text_len = commit_for_check.chars().count();
+                                            
+                                            // Apply auto-correction or show notification
+                                            for issue in &result.matches {
+                                                // Check if the issue is in the last part of the text (last word + some margin)
+                                                let issue_end = issue.offset + issue.length;
+                                                let is_last_word = issue_end >= text_len.saturating_sub(20);
+                                                
+                                                if issue.replacements.is_empty() {
+                                                    // No suggestions - just show notification with the issue
+                                                    show_notification(
+                                                        "Орфографическая ошибка",
+                                                        &issue.message,
+                                                    );
+                                                } else if issue.replacements.len() == 1 && is_last_word {
+                                                    // Single suggestion for last word - auto-correct
+                                                    let replacement = &issue.replacements[0].value;
+                                                    info!(
+                                                        length = issue.length,
+                                                        replacement = %replacement,
+                                                        "auto-correcting spelling error"
+                                                    );
+                                                    
+                                                    // Delete the error (issue.length backspaces)
+                                                    if platform.send_backspaces(&config.forbidden_contexts, issue.length).unwrap_or(false) {
+                                                        // Insert the correction
+                                                        let _ = platform.send_unicode_text(&config.forbidden_contexts, replacement);
+                                                        
+                                                        show_notification(
+                                                            "Автоисправление",
+                                                            &format!("Исправлено на: {}", replacement),
+                                                        );
+                                                    }
+                                                } else {
+                                                    // Multiple suggestions - show notification
+                                                    let suggestions = issue.replacements
+                                                        .iter()
+                                                        .take(3)
+                                                        .map(|r| r.value.as_str())
+                                                        .collect::<Vec<_>>()
+                                                        .join(", ");
+                                                    
+                                                    show_notification(
+                                                        "Предложения исправлений",
+                                                        &format!("{}\n\nВарианты: {}", issue.message, suggestions),
+                                                    );
+                                                }
+                                            }
                                         }
                                     }
                                     Err(err) => {
@@ -224,6 +294,17 @@ struct LanguageToolResponse {
 struct LanguageToolMatch {
     #[serde(default)]
     message: String,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default)]
+    length: usize,
+    #[serde(default)]
+    replacements: Vec<Replacement>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Replacement {
+    value: String,
 }
 
 async fn languagetool_check(

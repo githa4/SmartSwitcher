@@ -4,6 +4,17 @@ use smart_switcher_core::{Module, ModuleContext, ModuleHandle};
 use smart_switcher_shared_types::{config::LayoutSwitcherConfig, AppEvent};
 use tracing::{debug, info, warn};
 
+fn is_short_en_to_ru_allowlisted(typed: &str) -> bool {
+    // Намеренно минимальный allowlist для самых частых коротких слов,
+    // чтобы не увеличивать ложные срабатывания.
+    // 2 буквы: yt->не, yf->на, bp->из, jn->от, pf->за, dc->во, lj->до
+    // 4 буквы: dctv->всем, tcnm->есть
+    matches!(
+        typed.to_ascii_lowercase().as_str(),
+        "yt" | "yf" | "bp" | "jn" | "pf" | "dc" | "lj" | "dctv" | "tcnm"
+    )
+}
+
 pub struct LayoutSwitcherModule {
     config: LayoutSwitcherConfig,
 }
@@ -140,7 +151,13 @@ impl Module for LayoutSwitcherModule {
                             }
                             0x20 => {
                                 // Space
-                                if word_keys.len() >= config.detect_threshold as usize {
+                                let typed: String = word_keys.iter().collect();
+                                
+                                // Проверяем длину только если слово НЕ в allowlist
+                                let meets_threshold = word_keys.len() >= config.detect_threshold as usize
+                                    || is_short_en_to_ru_allowlisted(&typed);
+                                
+                                if meets_threshold {
                                     // Fail-closed: никаких действий в запрещённых контекстах.
                                     // Сразу выходим, чтобы не "подвешивать" эвристики в терминалах/менеджерах паролей.
                                     match platform.is_forbidden_context(&config.forbidden_contexts) {
@@ -161,8 +178,6 @@ impl Module for LayoutSwitcherModule {
                                     let commit_is_cyrillic = is_cyrillic_lang_id(lang);
                                     let commit_is_latin = !commit_is_cyrillic;
 
-                                    let typed: String = word_keys.iter().collect();
-
                                     debug!(
                                         word = %typed,
                                         lang = format_args!("0x{lang:04X}"),
@@ -172,7 +187,8 @@ impl Module for LayoutSwitcherModule {
                                     );
 
                                     // Консервативный фильтр: не трогаем короткие слова и акронимы.
-                                    if typed.len() < min_autocorrect_len
+                                    if (typed.len() < min_autocorrect_len
+                                        && !is_short_en_to_ru_allowlisted(&typed))
                                         || is_all_upper_ascii(&typed)
                                         || is_mixed_case_ascii(&typed)
                                     {
@@ -301,6 +317,14 @@ impl Module for LayoutSwitcherModule {
                                             "auto-correct skipped (unknown layout class)"
                                         );
                                     }
+                                } else {
+                                    // Слово не прошло порог detect_threshold и не в allowlist
+                                    debug!(
+                                        word = %typed,
+                                        len = word_keys.len(),
+                                        threshold = config.detect_threshold,
+                                        "auto-correct skipped (length threshold)"
+                                    );
                                 }
 
                                 word_keys.clear();
@@ -310,6 +334,14 @@ impl Module for LayoutSwitcherModule {
                                 // Консервативно: НЕ автоисправляем на Enter, чтобы не ломать переносы строк
                                 // (в разных приложениях это может быть \n или \r\n).
                                 word_keys.clear();
+                            }
+                            0xBC => {
+                                // VK_OEM_COMMA: в RU раскладке это буква 'б'
+                                word_keys.push(',');
+                            }
+                            0xBE => {
+                                // VK_OEM_PERIOD: в RU раскладке это буква 'ю'
+                                word_keys.push('.');
                             }
                             vk if is_letter_vk(vk) => {
                                 // letters: collect physical key as latin char
@@ -340,8 +372,10 @@ fn is_cyrillic_lang_id(lang_id: u16) -> bool {
     matches!(primary_lang_id(lang_id), 0x0019 | 0x0022 | 0x0023)
 }
 
-fn is_ascii_word(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphabetic())
+fn is_ascii_layout_keys(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphabetic() || matches!(c, ',' | '.'))
 }
 
 fn map_en_to_ru(ch: char) -> char {
@@ -372,6 +406,8 @@ fn map_en_to_ru(ch: char) -> char {
         'b' => 'и',
         'n' => 'т',
         'm' => 'ь',
+        ',' => 'б',
+        '.' => 'ю',
         other => other,
     }
 }
@@ -424,7 +460,7 @@ fn ru_vowel_ratio(s: &str) -> f32 {
 }
 
 fn looks_like_english_word(typed: &str) -> bool {
-    if !is_ascii_word(typed) {
+    if !is_ascii_layout_keys(typed) {
         return false;
     }
 
@@ -449,9 +485,15 @@ fn has_strong_english_bigrams(typed: &str) -> bool {
 }
 
 fn should_autocorrect_en_to_ru(typed: &str, converted: &str) -> bool {
-    if !is_ascii_word(typed) {
+    if !is_ascii_layout_keys(typed) {
         return false;
     }
+    
+    // Ранний проход для коротких слов из allowlist (минуя эвристики)
+    if is_short_en_to_ru_allowlisted(typed) {
+        return true;
+    }
+    
     if looks_like_english_word(typed) {
         return false;
     }
@@ -462,7 +504,7 @@ fn should_autocorrect_en_to_ru(typed: &str, converted: &str) -> bool {
 }
 
 fn should_autocorrect_ru_to_en(typed: &str, would_be_ru: &str) -> bool {
-    if !is_ascii_word(typed) {
+    if !is_ascii_layout_keys(typed) {
         return false;
     }
     if !looks_like_english_word(typed) {
@@ -507,14 +549,64 @@ mod tests {
     }
 
     #[test]
+    fn test_map_en_to_ru_punctuation_keys() {
+        let typed = ",.";
+        let converted: String = typed.chars().map(map_en_to_ru).collect();
+        assert_eq!(converted, "бю");
+    }
+
+    #[test]
     fn test_should_autocorrect_en_to_ru() {
         let typed = "ghbdtn";
         let converted: String = typed.chars().map(map_en_to_ru).collect();
         assert!(should_autocorrect_en_to_ru(typed, &converted));
 
+        let typed = "dctv";
+        let converted: String = typed.chars().map(map_en_to_ru).collect();
+        assert_eq!(converted, "всем");
+        assert!(should_autocorrect_en_to_ru(typed, &converted));
+
+        let typed = "tcnm";
+        let converted: String = typed.chars().map(map_en_to_ru).collect();
+        assert_eq!(converted, "есть");
+        assert!(should_autocorrect_en_to_ru(typed, &converted));
+
+        let typed = "yt";
+        let converted: String = typed.chars().map(map_en_to_ru).collect();
+        assert_eq!(converted, "не");
+        assert!(should_autocorrect_en_to_ru(typed, &converted));
+
         let typed = "hello";
         let converted: String = typed.chars().map(map_en_to_ru).collect();
         assert!(!should_autocorrect_en_to_ru(typed, &converted));
+
+        // Смешанный кейс: 'б' набирается через VK_OEM_COMMA, а остальное — через A-Z.
+        // На экране это выглядит как "chf,отать", а по физическим клавишам — "chf,jnfnm".
+        let typed = "chf,jnfnm";
+        let converted: String = typed.chars().map(map_en_to_ru).collect();
+        assert_eq!(converted, "сработать");
+        assert!(should_autocorrect_en_to_ru(typed, &converted));
+    }
+
+    #[test]
+    fn test_short_en_to_ru_allowlist() {
+        // 2-letter words
+        assert!(is_short_en_to_ru_allowlisted("yt"));
+        assert!(is_short_en_to_ru_allowlisted("YT"));
+        assert!(is_short_en_to_ru_allowlisted("yf"));
+        assert!(is_short_en_to_ru_allowlisted("bp"));
+        assert!(is_short_en_to_ru_allowlisted("jn"));
+        assert!(is_short_en_to_ru_allowlisted("pf"));
+        assert!(is_short_en_to_ru_allowlisted("dc"));
+        assert!(is_short_en_to_ru_allowlisted("lj"));
+        // 4-letter words
+        assert!(is_short_en_to_ru_allowlisted("dctv"));
+        assert!(is_short_en_to_ru_allowlisted("DCTV"));
+        assert!(is_short_en_to_ru_allowlisted("tcnm"));
+        assert!(is_short_en_to_ru_allowlisted("TCNM"));
+        // Not in allowlist
+        assert!(!is_short_en_to_ru_allowlisted("http"));
+        assert!(!is_short_en_to_ru_allowlisted("ab"));
     }
 
     #[test]

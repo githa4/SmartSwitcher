@@ -14,7 +14,7 @@ blocked_windows = ["- Password", "KeePass", "1Password", "Bitwarden"]
 blocked_input_types = ["password"]
 
 [spell_checker]
-enabled = false
+enabled = true  # Включено для тестирования
 api = "languagetool"
 language = "ru"
 cache_size = 1000
