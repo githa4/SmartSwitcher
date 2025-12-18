@@ -72,6 +72,41 @@ impl Module for LayoutSwitcherModule {
                 has_letters
             };
 
+            let is_mixed_case_ascii = |s: &str| {
+                let mut has_lower = false;
+                let mut has_upper = false;
+                for ch in s.chars() {
+                    if ch.is_ascii_lowercase() {
+                        has_lower = true;
+                    } else if ch.is_ascii_uppercase() {
+                        has_upper = true;
+                    }
+                }
+                has_lower && has_upper
+            };
+
+            let ru_vowel_ratio = |s: &str| {
+                let mut vowels = 0usize;
+                let mut letters = 0usize;
+                for ch in s.chars() {
+                    if ch.is_alphabetic() {
+                        letters += 1;
+                    }
+                    if matches!(
+                        ch,
+                        'а' | 'е' | 'ё' | 'и' | 'о' | 'у' | 'ы' | 'э' | 'ю' | 'я'
+                            | 'А' | 'Е' | 'Ё' | 'И' | 'О' | 'У' | 'Ы' | 'Э' | 'Ю' | 'Я'
+                    ) {
+                        vowels += 1;
+                    }
+                }
+                if letters == 0 {
+                    0.0
+                } else {
+                    vowels as f32 / letters as f32
+                }
+            };
+
             let map_en_to_ru = |ch: char| -> char {
                 match ch.to_ascii_lowercase() {
                     'q' => 'й', 'w' => 'ц', 'e' => 'у', 'r' => 'к', 't' => 'е', 'y' => 'н', 'u' => 'г', 'i' => 'ш', 'o' => 'щ', 'p' => 'з',
@@ -144,7 +179,10 @@ impl Module for LayoutSwitcherModule {
                                     let typed: String = word_keys.iter().collect();
 
                                     // Консервативный фильтр: не трогаем короткие слова и акронимы.
-                                    if typed.len() < min_autocorrect_len || is_all_upper_ascii(&typed) {
+                                    if typed.len() < min_autocorrect_len
+                                        || is_all_upper_ascii(&typed)
+                                        || is_mixed_case_ascii(&typed)
+                                    {
                                         word_keys.clear();
                                         continue;
                                     }
@@ -174,7 +212,9 @@ impl Module for LayoutSwitcherModule {
                                         // Тут `typed` — это физические латинские клавиши.
                                         // Если пользователь хотел английское слово, оно уже находится в `typed`.
                                         let would_be_ru: String = typed.chars().map(map_en_to_ru).collect();
-                                        if en_vowels(&typed) && !ru_vowels(&would_be_ru) {
+                                        // Консервативно считаем "похоже на русское" если доля русских гласных высокая.
+                                        // Тогда не исправляем. Исправляем только если "как будто RU" выглядит плохо.
+                                        if en_vowels(&typed) && ru_vowel_ratio(&would_be_ru) < 0.25 {
                                             let _ = platform
                                                 .set_layout_by_lang_id(&config.forbidden_contexts, 0x0409)
                                                 .ok();
