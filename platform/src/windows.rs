@@ -4,15 +4,22 @@ use std::{
 };
 
 use anyhow::Context;
+use smart_switcher_shared_types::config::ForbiddenContextsConfig;
 use smart_switcher_shared_types::KeyboardEvent;
 use windows_sys::Win32::{
-    Foundation::{GetLastError, HINSTANCE, LPARAM, LRESULT, WPARAM},
+    Foundation::{CloseHandle, GetLastError, HINSTANCE, LPARAM, LRESULT, WPARAM},
+    System::{
+        Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
+    },
     System::LibraryLoader::GetModuleHandleW,
+    UI::Input::KeyboardAndMouse::{GetKeyboardLayout, GetKeyboardLayoutList},
     UI::WindowsAndMessaging::{
-        CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW,
-        SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HC_ACTION,
-        KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT,
-        WM_SYSKEYDOWN, WM_SYSKEYUP,
+        CallNextHookEx, DispatchMessageW, GetForegroundWindow, GetMessageW,
+        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        PostMessageW, PostThreadMessageW, SetWindowsHookExW, TranslateMessage,
+        UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
+        WM_INPUTLANGCHANGEREQUEST, WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN,
+        WM_SYSKEYUP,
     },
 };
 
@@ -137,4 +144,136 @@ pub fn start_keyboard_hook() -> anyhow::Result<KeyboardHook> {
         },
         events: events_rx,
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveWindowInfo {
+    pub title: String,
+    pub process_name: Option<String>,
+}
+
+fn contains_any(haystack: &str, needles: &[String]) -> bool {
+    let haystack = haystack.to_lowercase();
+    needles
+        .iter()
+        .map(|s| s.to_lowercase())
+        .any(|needle| !needle.is_empty() && haystack.contains(&needle))
+}
+
+fn is_forbidden(info: &ActiveWindowInfo, forbidden: &ForbiddenContextsConfig) -> bool {
+    if contains_any(&info.title, &forbidden.blocked_windows) {
+        return true;
+    }
+
+    if let Some(proc_name) = info.process_name.as_ref() {
+        if contains_any(proc_name, &forbidden.blocked_processes) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn get_window_title(hwnd: *mut core::ffi::c_void) -> anyhow::Result<String> {
+    let len = unsafe { GetWindowTextLengthW(hwnd) };
+    if len <= 0 {
+        return Ok(String::new());
+    }
+
+    let mut buf = vec![0u16; (len as usize) + 1];
+    let written = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+    if written <= 0 {
+        return Ok(String::new());
+    }
+
+    Ok(String::from_utf16_lossy(&buf[..written as usize]))
+}
+
+fn get_process_name(hwnd: *mut core::ffi::c_void) -> Option<String> {
+    let mut pid: u32 = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    if pid == 0 {
+        return None;
+    }
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+
+    let mut buf = vec![0u16; 1024];
+    let mut size: u32 = buf.len() as u32;
+    let ok = unsafe {
+        QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size)
+    };
+    unsafe {
+        CloseHandle(handle);
+    }
+
+    if ok == 0 || size == 0 {
+        return None;
+    }
+
+    let full = String::from_utf16_lossy(&buf[..size as usize]);
+    let name = std::path::Path::new(&full)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
+
+    name
+}
+
+pub fn get_active_window_info() -> anyhow::Result<ActiveWindowInfo> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return Err(anyhow::anyhow!("GetForegroundWindow returned null"));
+    }
+
+    Ok(ActiveWindowInfo {
+        title: get_window_title(hwnd)?,
+        process_name: get_process_name(hwnd),
+    })
+}
+
+pub fn switch_to_next_layout(forbidden: &ForbiddenContextsConfig) -> anyhow::Result<bool> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return Ok(false);
+    }
+
+    let info = ActiveWindowInfo {
+        title: get_window_title(hwnd)?,
+        process_name: get_process_name(hwnd),
+    };
+    if is_forbidden(&info, forbidden) {
+        return Ok(false);
+    }
+
+    let mut pid: u32 = 0;
+    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    if thread_id == 0 {
+        return Ok(false);
+    }
+
+    let current = unsafe { GetKeyboardLayout(thread_id) };
+    let count = unsafe { GetKeyboardLayoutList(0, std::ptr::null_mut()) };
+    if count <= 0 {
+        return Ok(false);
+    }
+
+    let mut layouts: Vec<*mut core::ffi::c_void> = vec![std::ptr::null_mut(); count as usize];
+    let filled = unsafe { GetKeyboardLayoutList(count, layouts.as_mut_ptr()) };
+    if filled <= 0 {
+        return Ok(false);
+    }
+    layouts.truncate(filled as usize);
+
+    let next = match layouts.iter().position(|&hkl| hkl == current) {
+        Some(idx) => layouts[(idx + 1) % layouts.len()],
+        None => layouts[0],
+    };
+
+    let ok = unsafe { PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, next as isize) };
+
+    Ok(ok != 0)
 }
