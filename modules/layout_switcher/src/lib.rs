@@ -441,6 +441,13 @@ fn looks_like_english_word(typed: &str) -> bool {
         || ratio >= 0.25
 }
 
+fn has_strong_english_bigrams(typed: &str) -> bool {
+    let lower = typed.to_ascii_lowercase();
+    ["th", "sh", "ch", "ck", "qu", "ng", "oo", "ee"]
+        .iter()
+        .any(|b| lower.contains(b))
+}
+
 fn should_autocorrect_en_to_ru(typed: &str, converted: &str) -> bool {
     if !is_ascii_word(typed) {
         return false;
@@ -463,9 +470,14 @@ fn should_autocorrect_ru_to_en(typed: &str, would_be_ru: &str) -> bool {
     }
 
     // Если "экранное" RU похоже на реальное русское слово — не трогаем.
-    // Исправляем только когда оно выглядит как мусор (слишком мало русских гласных).
-    // Порог подобран так, чтобы исправлялись типовые кейсы вроде "hello" → "руддщ".
-    ru_vowel_ratio(would_be_ru) < 0.25
+    // Исправляем только когда оно выглядит как мусор. Для высокой уверенности ("th", "sh"...)
+    // допускаем более мягкий порог, чтобы ловить кейсы вроде "thanks" → "ерфтлы".
+    let ru_ratio = ru_vowel_ratio(would_be_ru);
+    if ru_ratio < 0.25 {
+        return true;
+    }
+
+    has_strong_english_bigrams(typed) && ru_ratio < 0.45
 }
 
 #[cfg(test)]
@@ -509,6 +521,12 @@ mod tests {
     fn test_should_autocorrect_ru_to_en() {
         // Пользователь в RU раскладке хотел EN: 'hello' на экране выглядит как 'руддщ'.
         let typed = "hello";
+        let would_be_ru: String = typed.chars().map(map_en_to_ru).collect();
+        assert!(should_autocorrect_ru_to_en(typed, &would_be_ru));
+
+        // Типовой кейс: в RU раскладке хотел EN, а на экране получилось "похоже на слово",
+        // но это всё равно мусор для пользователя.
+        let typed = "thanks";
         let would_be_ru: String = typed.chars().map(map_en_to_ru).collect();
         assert!(should_autocorrect_ru_to_en(typed, &would_be_ru));
 
