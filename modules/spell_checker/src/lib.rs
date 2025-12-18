@@ -40,6 +40,7 @@ impl Module for SpellCheckerModule {
                         info!("spell_checker shutting down");
                         break;
                     }
+                    AppEvent::Keyboard(_) => {}
                 }
             }
 

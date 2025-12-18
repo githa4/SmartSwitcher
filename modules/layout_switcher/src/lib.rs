@@ -2,7 +2,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use smart_switcher_core::{Module, ModuleContext, ModuleHandle};
 use smart_switcher_shared_types::{config::LayoutSwitcherConfig, AppEvent};
-use tracing::info;
+use tracing::{debug, info};
 
 pub struct LayoutSwitcherModule {
     config: LayoutSwitcherConfig,
@@ -38,6 +38,11 @@ impl Module for LayoutSwitcherModule {
                     AppEvent::ShutdownRequested => {
                         info!("layout_switcher shutting down");
                         break;
+                    }
+                    AppEvent::Keyboard(ev) => {
+                        if ev.is_key_down {
+                            debug!(vk_code = ev.vk_code, "key down");
+                        }
                     }
                 }
             }

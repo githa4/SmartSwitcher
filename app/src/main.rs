@@ -31,6 +31,31 @@ async fn main() -> anyhow::Result<()> {
         platform: runtime.platform.clone(),
     };
 
+    #[cfg(target_os = "windows")]
+    let (mut keyboard_hook_controller, mut keyboard_forward_join) = {
+        let should_start_hook = runtime.config.layout_switcher.enabled
+            && is_module_loaded(&runtime.config, "layout_switcher");
+
+        if should_start_hook {
+            let hook = runtime
+                .platform
+                .start_keyboard_hook()
+                .context("start keyboard hook")?;
+            let (controller, events_rx) = hook.into_parts();
+
+            let bus = runtime.bus.clone();
+            let forward = std::thread::spawn(move || {
+                for ev in events_rx {
+                    bus.send(AppEvent::Keyboard(ev));
+                }
+            });
+
+            (Some(controller), Some(forward))
+        } else {
+            (None, None)
+        }
+    };
+
     let mut handles = Vec::new();
     let modules: Vec<Box<dyn Module>> = vec![
         Box::new(LayoutSwitcherModule::new(
@@ -72,6 +97,16 @@ async fn main() -> anyhow::Result<()> {
     runtime.bus.send(AppEvent::ShutdownRequested);
     for handle in handles {
         handle.join().await?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(controller) = keyboard_hook_controller.take() {
+            controller.stop();
+        }
+        if let Some(forward) = keyboard_forward_join.take() {
+            let _ = forward.join();
+        }
     }
 
     info!("smart_switcher stopped");

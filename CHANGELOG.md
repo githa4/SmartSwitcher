@@ -5,6 +5,30 @@
 
 ---
 
+#️⃣ [0.1.5] 📅 2025-12-18 🕤 05:35
+
+▶️ **Тема коммита:** `🪟 Этап 1: Windows keyboard hook + события в EventBus`
+
+✅ Добавлено
+- ⌨️ События клавиатуры в `smart_switcher_shared_types`:
+  - `KeyboardEvent`
+  - `AppEvent::Keyboard(KeyboardEvent)`
+- 🪟 Windows low-level keyboard hook (WH_KEYBOARD_LL) в `smart_switcher_platform`
+  с доставкой событий в приложение
+- 🔌 Подключение хука в `app` и прокидка событий в `EventBus`
+
+✅ Изменено
+- 🧩 `layout_switcher` теперь получает события клавиатуры (пока логирует key-down)
+
+✅ Исправлено
+- —
+
+✅ Удалено
+- —
+
+
+---
+
 #️⃣ [0.1.4] 📅 2025-12-18 🕤 05:15
 
 ▶️ **Тема коммита:** `📚 Документация: troubleshooting Windows MSVC сборки`
