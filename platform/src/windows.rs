@@ -12,7 +12,10 @@ use windows_sys::Win32::{
         Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
     },
     System::LibraryLoader::GetModuleHandleW,
-    UI::Input::KeyboardAndMouse::{GetKeyboardLayout, GetKeyboardLayoutList},
+    UI::Input::KeyboardAndMouse::{
+        GetKeyboardLayout, GetKeyboardLayoutList, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD,
+        KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, VK_BACK,
+    },
     UI::WindowsAndMessaging::{
         CallNextHookEx, DispatchMessageW, GetForegroundWindow, GetMessageW,
         GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
@@ -276,4 +279,160 @@ pub fn switch_to_next_layout(forbidden: &ForbiddenContextsConfig) -> anyhow::Res
     let ok = unsafe { PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, next as isize) };
 
     Ok(ok != 0)
+}
+
+fn lo_word(value: isize) -> u16 {
+    (value as usize & 0xFFFF) as u16
+}
+
+pub fn get_active_lang_id() -> anyhow::Result<u16> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return Err(anyhow::anyhow!("GetForegroundWindow returned null"));
+    }
+
+    let mut pid: u32 = 0;
+    let thread_id = unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    if thread_id == 0 {
+        return Err(anyhow::anyhow!("GetWindowThreadProcessId returned 0"));
+    }
+
+    let hkl = unsafe { GetKeyboardLayout(thread_id) };
+    Ok(lo_word(hkl as isize))
+}
+
+pub fn set_layout_by_lang_id(
+    forbidden: &ForbiddenContextsConfig,
+    lang_id: u16,
+) -> anyhow::Result<bool> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_null() {
+        return Ok(false);
+    }
+
+    let info = ActiveWindowInfo {
+        title: get_window_title(hwnd)?,
+        process_name: get_process_name(hwnd),
+    };
+    if is_forbidden(&info, forbidden) {
+        return Ok(false);
+    }
+
+    let count = unsafe { GetKeyboardLayoutList(0, std::ptr::null_mut()) };
+    if count <= 0 {
+        return Ok(false);
+    }
+
+    let mut layouts: Vec<*mut core::ffi::c_void> = vec![std::ptr::null_mut(); count as usize];
+    let filled = unsafe { GetKeyboardLayoutList(count, layouts.as_mut_ptr()) };
+    if filled <= 0 {
+        return Ok(false);
+    }
+    layouts.truncate(filled as usize);
+
+    let target = layouts
+        .into_iter()
+        .find(|&hkl| lo_word(hkl as isize) == lang_id);
+
+    let Some(target) = target else {
+        return Ok(false);
+    };
+
+    let ok = unsafe { PostMessageW(hwnd, WM_INPUTLANGCHANGEREQUEST, 0, target as isize) };
+    Ok(ok != 0)
+}
+
+pub fn send_backspaces(forbidden: &ForbiddenContextsConfig, count: usize) -> anyhow::Result<bool> {
+    let info = get_active_window_info()?;
+    if is_forbidden(&info, forbidden) {
+        return Ok(false);
+    }
+
+    if count == 0 {
+        return Ok(true);
+    }
+
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(count * 2);
+    for _ in 0..count {
+        let down = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_BACK as u16,
+                    wScan: 0,
+                    dwFlags: 0,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+
+        let up = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_BACK as u16,
+                    wScan: 0,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+
+        inputs.push(down);
+        inputs.push(up);
+    }
+
+    let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+    Ok(sent == inputs.len() as u32)
+}
+
+pub fn send_unicode_text(
+    forbidden: &ForbiddenContextsConfig,
+    text: &str,
+) -> anyhow::Result<bool> {
+    let info = get_active_window_info()?;
+    if is_forbidden(&info, forbidden) {
+        return Ok(false);
+    }
+
+    if text.is_empty() {
+        return Ok(true);
+    }
+
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(text.encode_utf16().count() * 2);
+    for ch in text.encode_utf16() {
+        let down = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: 0,
+                    wScan: ch,
+                    dwFlags: KEYEVENTF_UNICODE,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+
+        let up = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: 0,
+                    wScan: ch,
+                    dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+
+        inputs.push(down);
+        inputs.push(up);
+    }
+
+    let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+    Ok(sent == inputs.len() as u32)
 }

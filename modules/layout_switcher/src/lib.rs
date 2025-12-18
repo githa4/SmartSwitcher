@@ -43,6 +43,30 @@ impl Module for LayoutSwitcherModule {
             let mut is_shift_down = false;
             let mut hotkey_fired = false;
 
+            let mut word_keys: Vec<char> = Vec::new();
+
+            let is_letter_vk = |vk: u32| (0x41..=0x5A).contains(&vk);
+            let vk_to_letter = |vk: u32, shift: bool| {
+                let base = (vk as u8 as char).to_ascii_lowercase();
+                if shift {
+                    base.to_ascii_uppercase()
+                } else {
+                    base
+                }
+            };
+
+            let en_vowels = |s: &str| s.chars().any(|c| matches!(c, 'a'|'e'|'i'|'o'|'u'|'y'|'A'|'E'|'I'|'O'|'U'|'Y'));
+            let ru_vowels = |s: &str| s.chars().any(|c| matches!(c, 'а'|'е'|'ё'|'и'|'о'|'у'|'ы'|'э'|'ю'|'я'|'А'|'Е'|'Ё'|'И'|'О'|'У'|'Ы'|'Э'|'Ю'|'Я'));
+
+            let map_en_to_ru = |ch: char| -> char {
+                match ch.to_ascii_lowercase() {
+                    'q' => 'й', 'w' => 'ц', 'e' => 'у', 'r' => 'к', 't' => 'е', 'y' => 'н', 'u' => 'г', 'i' => 'ш', 'o' => 'щ', 'p' => 'з',
+                    'a' => 'ф', 's' => 'ы', 'd' => 'в', 'f' => 'а', 'g' => 'п', 'h' => 'р', 'j' => 'о', 'k' => 'л', 'l' => 'д',
+                    'z' => 'я', 'x' => 'ч', 'c' => 'с', 'v' => 'м', 'b' => 'и', 'n' => 'т', 'm' => 'ь',
+                    other => other,
+                }
+            };
+
             let is_alt_vk = |vk: u32| matches!(vk, 0x12 | 0xA4 | 0xA5);
             let is_shift_vk = |vk: u32| matches!(vk, 0x10 | 0xA0 | 0xA1);
 
@@ -80,6 +104,62 @@ impl Module for LayoutSwitcherModule {
                                 info!("layout switched");
                             } else {
                                 info!("layout switch skipped (forbidden or unavailable)");
+                            }
+                        }
+
+                        if !config.auto_detect {
+                            continue;
+                        }
+
+                        if is_alt_down {
+                            continue;
+                        }
+
+                        match ev.vk_code {
+                            0x08 => {
+                                // Backspace
+                                word_keys.pop();
+                            }
+                            0x20 | 0x0D => {
+                                // Space / Enter
+                                if word_keys.len() >= config.detect_threshold as usize {
+                                    // EN (0x0409) -> RU (0x0419)
+                                    let lang = platform.get_active_lang_id().unwrap_or(0);
+                                    let is_en = lang == 0x0409;
+
+                                    if is_en {
+                                        let typed: String = word_keys.iter().collect();
+                                        let converted: String = typed.chars().map(map_en_to_ru).collect();
+
+                                        if !en_vowels(&typed) && ru_vowels(&converted) {
+                                            let _ = platform
+                                                .set_layout_by_lang_id(&config.forbidden_contexts, 0x0419)
+                                                .ok();
+                                            let erased = platform
+                                                .send_backspaces(&config.forbidden_contexts, word_keys.len())
+                                                .unwrap_or(false);
+                                            if erased {
+                                                let injected = platform
+                                                    .send_unicode_text(&config.forbidden_contexts, &converted)
+                                                    .unwrap_or(false);
+                                                if injected {
+                                                    info!(from = %typed, to = %converted, "auto-detect corrected");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                word_keys.clear();
+                            }
+                            vk if is_letter_vk(vk) => {
+                                // letters: collect physical key as latin char
+                                let ch = vk_to_letter(vk, is_shift_down);
+                                word_keys.push(ch);
+                            }
+                            _ => {
+                                // delimiter / control
+                                word_keys.clear();
                             }
                         }
                     }
