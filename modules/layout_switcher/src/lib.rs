@@ -58,6 +58,20 @@ impl Module for LayoutSwitcherModule {
             let en_vowels = |s: &str| s.chars().any(|c| matches!(c, 'a'|'e'|'i'|'o'|'u'|'y'|'A'|'E'|'I'|'O'|'U'|'Y'));
             let ru_vowels = |s: &str| s.chars().any(|c| matches!(c, 'а'|'е'|'ё'|'и'|'о'|'у'|'ы'|'э'|'ю'|'я'|'А'|'Е'|'Ё'|'И'|'О'|'У'|'Ы'|'Э'|'Ю'|'Я'));
 
+            let min_autocorrect_len = 5usize;
+            let is_all_upper_ascii = |s: &str| {
+                let mut has_letters = false;
+                for ch in s.chars() {
+                    if ch.is_ascii_alphabetic() {
+                        has_letters = true;
+                        if !ch.is_ascii_uppercase() {
+                            return false;
+                        }
+                    }
+                }
+                has_letters
+            };
+
             let map_en_to_ru = |ch: char| -> char {
                 match ch.to_ascii_lowercase() {
                     'q' => 'й', 'w' => 'ц', 'e' => 'у', 'r' => 'к', 't' => 'е', 'y' => 'н', 'u' => 'г', 'i' => 'ш', 'o' => 'щ', 'p' => 'з',
@@ -128,6 +142,12 @@ impl Module for LayoutSwitcherModule {
                                     let is_ru = lang == 0x0419;
 
                                     let typed: String = word_keys.iter().collect();
+
+                                    // Консервативный фильтр: не трогаем короткие слова и акронимы.
+                                    if typed.len() < min_autocorrect_len || is_all_upper_ascii(&typed) {
+                                        word_keys.clear();
+                                        continue;
+                                    }
 
                                     if is_en {
                                         // EN (0x0409) -> RU (0x0419)
